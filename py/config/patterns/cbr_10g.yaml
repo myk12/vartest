@@ -1,0 +1,7 @@
+# Simple CBR pattern example
+name: cbr_10g
+exp_id: 1
+rate_gbps: 10
+packet_bytes: 512
+qid: 0
+seconds: 10

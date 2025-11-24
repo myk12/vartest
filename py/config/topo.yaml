@@ -1,0 +1,36 @@
+# Topology mapping for your setup
+# Using the 4th pipeline with front-panel port pairs:
+# (25, 26) -> FPGA
+# (27, 28) -> loop
+# (29, 30) -> loop
+# (31, 32) -> loop
+# We specify CONN_ID/CHNL_ID (channel typically 0). Code will resolve DEV_PORT.
+
+ports:
+  p25_0: { conn_id: 25, chnl_id: 0 , FPGA: true}
+  p26_0: { conn_id: 26, chnl_id: 0 , FPGA: true}
+  p27_0: { conn_id: 27, chnl_id: 0 , FPGA: false}
+  p28_0: { conn_id: 28, chnl_id: 0 , FPGA: false}
+  p29_0: { conn_id: 29, chnl_id: 0 , FPGA: false}
+  p30_0: { conn_id: 30, chnl_id: 0 , FPGA: false}
+  p31_0: { conn_id: 31, chnl_id: 0 , FPGA: false}
+  p32_0: { conn_id: 32, chnl_id: 0 , FPGA: false}
+
+# Optional labeling of pairs for documentation / orchestration
+pairs:
+  - [ p25_0, p26_0 ]  # FPGA ports
+  - [ p27_0, p28_0 ]  # loop ports
+  - [ p29_0, p30_0 ]  # loop ports
+  - [ p31_0, p32_0 ]  # loop ports
+
+# Forward-table experiment mappings: exp_id -> (port, qid)
+# These are examples; adjust as needed or add more patterns.
+exp_map:
+  - { exp_id: 100, conn_id: 25, chnl_id: 0, qid: 0 }  # to FPGA port 25
+  - { exp_id: 101, conn_id: 26, chnl_id: 0, qid: 0 }  # to FPGA port 26
+  - { exp_id: 200, conn_id: 27, chnl_id: 0, qid: 0 }  # to loop port 27
+  - { exp_id: 201, conn_id: 28, chnl_id: 0, qid: 0 }  # to loop port 28
+  - { exp_id: 300, conn_id: 29, chnl_id: 0, qid: 0 }  # to loop port 29
+  - { exp_id: 301, conn_id: 30, chnl_id: 0, qid: 0 }  # to loop port 30
+  - { exp_id: 400, conn_id: 31, chnl_id: 0, qid: 0 }  # to loop port 31
+  - { exp_id: 401, conn_id: 32, chnl_id: 0, qid: 0 }  # to loop port 32

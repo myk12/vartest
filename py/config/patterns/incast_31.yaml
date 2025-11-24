@@ -1,0 +1,38 @@
+name: incast_31
+version: 1
+scene: incast_to_31
+notes: "Multiple sources converge on port 31; include return probe 31->30"
+mode: staged
+stages:
+  - sources: [30,28]
+    sink: 31
+    per_source_rate_gbps: 10
+    pkt_bytes: 256
+    duration_s: 30
+  - sources: [30,28,29,24]
+    sink: 31
+    per_source_rate_gbps: 10
+    pkt_bytes: 256
+    duration_s: 30
+  - sources: [30,28,29,24,25,26]
+    sink: 31
+    per_source_rate_gbps: 10
+    pkt_bytes: 256
+    duration_s: 30
+  - sources: [30,28,29,24,25,26,27]
+    sink: 31
+    per_source_rate_gbps: 10
+    pkt_bytes: 256
+    duration_s: 60
+experiment_return_flow:
+  exp_id: 101
+  src_port: 31
+  dst_port: 30
+  rate_gbps: 2
+  pkt_bytes: 256
+  udp_dst_port: 12345
+udp_dst_port: 12345
+capture:
+  enabled: true
+  interface: enp1s0f0
+  bpf: "udp and port 12345"
