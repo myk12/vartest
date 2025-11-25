@@ -15,16 +15,14 @@ def main():
     """Main function to clear switch configurations."""
     logger.info("Clearing existing switch configurations...")
     # Assuming bfshell environment is already set up
-    if 'bfrt' not in globals():
-        logger.error("This script must be run within the bfshell environment.")
-        sys.exit(1)
+    assert 'bfrt' in globals(), "This script must be run within the bfshell environment."
     bfrt = globals()['bfrt']
     bfrt_pktgen = bfrt.tf2.pktgen
     bfrt_pipeline = bfrt.ts_pipeline.pipe
 
     # Stop pktgen app
     logger.info("Stopping pktgen application...")
-    bfrt_pktgen.pktgen_app.mod_with_trigger_timer_periodic(app_id=1, app_enable=False)
+    bfrt_pktgen.app_cfg.mod_with_trigger_timer_periodic(app_id=1, app_enable=False)
 
     # Clear pktgen pkt_buffer
     logger.info("Clearing pktgen packet buffer...")
