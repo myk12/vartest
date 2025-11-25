@@ -9,30 +9,30 @@
 #   measuring the time taken for packets to traverse the switch.
 # - One thread is used for sending packets, and another for receiving them.
 
-import multiprocessing
-import socket
-import time
 import struct
 import ctypes
 import os
-import pandas as pd
-import matplotlib.pyplot as plt
+import argparse
+import paramiko
 from loguru import logger
+from utils.setup_switch import clear_switch, config_switch
+from utils.start_probing import start_probing
 
 #======================= Configurations =======================#
-SENDER_NS = os.getenv("NS1", "ns1")
-RECEIVER_NS = os.getenv("NS2", "ns2")
-SENDER_IFACE = os.getenv("IFACE1", "eth1")
-RECEIVER_IFACE = os.getenv("IFACE2", "eth2")
+SENDER_NS = os.getenv("NS1", "fpganic_p1")
+RECEIVER_NS = os.getenv("NS2", "fpganic_p2")
+SENDER_IFACE = os.getenv("IFACE1", "enp202s0np0")
+RECEIVER_IFACE = os.getenv("IFACE2", "enp202s0np1")
 SENDER_IP = os.getenv("IP1", "10.0.0.1")
 RECEIVER_IP = os.getenv("IP2", "10.0.0.2")
-PACKET_COUNT = 10
-PACKET_SIZE = 128
-SEND_RATE = 10  # packets per second
 
-SSH_HOST = os.getenv("TOFINO_SSH_HOST", "10.0.13.21")
-SSH_USER = os.getenv("TOFINO_SSH_USER", "p4")
-SSH_PASSWORD = os.getenv("TOFINO_SSH_PASSWORD", "rocks")
+TOFINO_SSH_HOST = os.getenv("TOFINO_SSH_HOST", "10.0.13.21")
+TOFINO_SSH_USER = os.getenv("TOFINO_SSH_USER", "p4")
+TOFINO_SSH_PASSWORD = os.getenv("TOFINO_SSH_PASSWORD", "rocks")
+
+SETUPENV_SCRIPT_PATH = os.getenv("SETUPENV_SCRIPT_PATH", "/home/p4/vartest/tofino/set_env.bash")
+CLEAR_SCRIPT_PATH = os.getenv("CLEAR_SCRIPT_PATH", "/home/p4/vartest/tofino/bfrt/bfrt_clear_switch.py")
+CONFIG_SCRIPT_PATH = os.getenv("CONFIG_SCRIPT_PATH", "/home/p4/vartest/tofino/bfrt/bfrt_config_switch.py")
 
 EXP_PORT = 17777
 
@@ -53,111 +53,6 @@ libc = ctypes.CDLL("libc.so.6")
 CLONE_NEWNET = 0x40000000
 #==============================================================#
 
-def switch_namespace(ns_name):
-    """Switch to the specified network namespace."""
-    logger.info(f"Switching to namespace: {ns_name}")
-    ns_path = f"/var/run/netns/{ns_name}"
-    try:
-        with open(ns_path) as ns_file:
-            # setns(fd, nstype): fd is the file descriptor of the namespace
-            ret = libc.setns(ns_file.fileno(), CLONE_NEWNET)
-            if ret != 0:
-                raise OSError(f"setns failed for {ns_name}")
-    except Exception as e:
-        logger.error(f"Error switching namespace: {e}")
-        exit(1)
-
-def receiver_task(result_queue, stop_event):
-    """Receiver process to capture packets and measure latency."""
-    # Switch to receiver namespace
-    switch_namespace(RECEIVER_NS)
-
-    # Create UDP socket to receive packets
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((RECEIVER_IP, EXP_PORT))
-    sock.settimeout(1.0)    # Set timeout to avoid blocking indefinitely
-    logger.info("Receiver started on {}:{}".format(RECEIVER_IP, EXP_PORT))
-    
-    received_data = {} # Key: seq_num, Value: ts_header
-    while not stop_event.is_set():
-        try:
-            data, addr = sock.recvfrom(2048)
-            recv_time = time.time_ns()  # in nanoseconds
-            
-            if len(data) >= HEADER_SIZE:  # Minimum size to unpack ts_h
-                (exp_id, seq_num, ingress_mac_ts, ingress_global_ts,
-                 egress_global_ts, ingress_port, egress_port) = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
-                logger.debug(f"Packet received from {addr}, exp_id={exp_id}, seq_num={seq_num}")
-                # Store full header information plus recv_time and latency
-                received_data[seq_num] = {
-                    'exp_id': exp_id,
-                    'seq': seq_num,
-                    'ingress_mac_ts': ingress_mac_ts,
-                    'ingress_global_ts': ingress_global_ts,
-                    'egress_global_ts': egress_global_ts,
-                    'ingress_port': ingress_port,
-                    'egress_port': egress_port,
-                    'recv_time': recv_time,
-                }
-        except socket.timeout:
-            continue
-        except Exception as e:
-            logger.error(f"Receiver error: {e}")
-            break
-
-    result_queue.put(received_data)
-    sock.close()
-    logger.info("Receiver stopped.")
-    
-def sender_task(stop_event):
-    """Sender process to send packets."""
-    # Switch to sender namespace
-    switch_namespace(SENDER_NS)
-
-    # Create UDP socket to send packets
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    logger.info("Sender started, sending to {}:9999".format(RECEIVER_IP))
-    
-    for seq_num in range(PACKET_COUNT):
-        if stop_event.is_set():
-            break
-        
-        send_time = time.time_ns()  # in nanoseconds
-        # Populate ts_h. We don't have hardware ingress MAC ts here, set to 0.
-        ingress_mac_ts = 0
-        ingress_global_ts = 0
-        egress_global_ts = 0
-        ingress_port = 0
-        egress_port = 0
-        header = struct.pack(HEADER_FORMAT, EXP_ID, seq_num, ingress_mac_ts, ingress_global_ts, egress_global_ts, ingress_port, egress_port)
-        payload = header + bytes(max(0, PACKET_SIZE - len(header)))
-        sock.sendto(payload, (RECEIVER_IP, EXP_PORT))
-        logger.debug(f"Sent packet seq_num={seq_num}")
-        
-        #time.sleep(1.0 / SEND_RATE)  # Control send rate
-
-    sock.close()
-    logger.info("Sender stopped.")
-    
-def plot_latency(df):
-    """Plot latency distribution using matplotlib."""
-    df['Ingress'] = df['ingress_global_ts'] - df['ingress_mac_ts']
-    df['Egress'] = df['egress_global_ts'] - df['ingress_mac_ts']
-    plt.figure(figsize=(10,6))
-    # plot line figure of Ingress and Egress latencies
-    plt.plot(df['seq'], df['Ingress'], label='Ingress Latency', marker='o')
-    plt.plot(df['seq'], df['Egress'], label='Egress Latency', marker='o')
-    plt.xlabel('Sequence Number')
-    plt.ylabel('Latency (ns)')
-    plt.title('Packet Latencies')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    time_test = time.strftime("%Y%m%d-%H%M%S")
-    plt.savefig(f'packet_timestamps_{time_test}.png')
-    logger.info(f"Latency distribution plot saved as 'packet_timestamps_{time_test}.png'.")
-
 def main():
     logger.info("Starting Tofino latency probing module.")
     # check root privilege
@@ -165,54 +60,54 @@ def main():
         logger.error("This script must be run as root.")
         exit(1)
     
-    # Create a queue to collect results from receiver
-    logger.info("Setting up multiprocessing manager and queues.")
-    mgr = multiprocessing.Manager()
-    recv_queue = mgr.Queue()
-    send_queue = mgr.Queue()
-    stop_event = multiprocessing.Event()
+    argparser = argparse.ArgumentParser(description="Tofino Latency Probing Module")
+    argparser.add_argument('--pattern', type=str, choices=['SINGLE', 'MULTIPLE'], default='SINGLE',
+                           help='Traffic pattern to use for probing')
+    argparser.add_argument('--rate', type=int, default=10,
+                           help='Packet send rate (Gbps)')
+    argparser.add_argument('--packet_size', type=int, default=1024,
+                           help='Packet size in bytes')
+    argparser.add_argument('--result_dir', type=str, default="./results",
+                           help='Directory to save results')
+    args = argparser.parse_args()
     
-    # Start receiver process
-    logger.info("Starting receiver process.")
-    receiver_process = multiprocessing.Process(target=receiver_task, args=(recv_queue, stop_event))
-    receiver_process.start()
+    # create SSH client to connect to Tofino switch
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(TOFINO_SSH_HOST, username=TOFINO_SSH_USER, password=TOFINO_SSH_PASSWORD)
     
-    time.sleep(1)  # Ensure receiver is ready before sender starts
-    # Start sender process
-    logger.info("Starting sender process.")
-    sender_process = multiprocessing.Process(target=sender_task, args=(stop_event,))
-    sender_process.start()
+    context = {
+        "PATTERN": args.pattern,
+        "RATE": args.rate,
+        "PACKET_SIZE": args.packet_size,
+        "TOFINO_SSH_HOST": TOFINO_SSH_HOST,
+        "TOFINO_SSH_USER": TOFINO_SSH_USER,
+        "TOFINO_SSH_PASSWORD": TOFINO_SSH_PASSWORD,
+        "SETUPENV_SCRIPT_PATH": SETUPENV_SCRIPT_PATH,
+        "CLEAR_SCRIPT_PATH": CLEAR_SCRIPT_PATH,
+        "CONFIG_SCRIPT_PATH": CONFIG_SCRIPT_PATH,
+    }
+    
+    logger.info("Context for switch setup: {}".format(context))
 
-    # Wait for sender to finish
-    logger.info("Waiting for sender process to finish.")
-    sender_process.join()
+    # clear remote Tofino switch configurations
+    logger.info("Clearing remote Tofino switch configurations.")
+    clear_switch(ssh_client, context)
+    # configure remote Tofino switch
+    logger.info("Configuring remote Tofino switch.")
+    config_switch(ssh_client, context)
+    ssh_client.close()
 
-    # Leave some time for receiver to process remaining packets
-    logger.info("Sender finished. Allowing receiver to finalize.")
-    time.sleep(3)
-    stop_event.set()
-    receiver_process.join()
-    
-    # Collect results from receiver
-    logger.info("Collecting results from receiver.")
-    received_data = recv_queue.get()
-    # received_data is a dict mapping seq -> header-dict. Convert to pandas DataFrame
-    if not received_data:
-        logger.warning("No packets were received.")
-        return
-    
-    # sort by sequence number for stable ordering
-    rows = [received_data[k] for k in sorted(received_data.keys())]
-    df = pd.DataFrame(rows)
-    logger.info(f"Converted {len(df)} packets to DataFrame with columns: {df.columns.tolist()}")
-    logger.debug(f"DataFrame head:\n{df.head().to_string()}")
-    plot_latency(df)
-    
-    # save DataFrame to CSV
-    test_time = time.strftime("%Y%m%d-%H%M%S")
-    csv_filename = f"tofino_probe_latency_{test_time}.csv"
-    df.to_csv(csv_filename, index=False)
-    logger.info(f"Saved latency data to {csv_filename}")
-    
+    # start probing processes
+    start_probing(result_dir=args.result_dir, pattern=args.pattern, rate=args.rate, packet_size=args.packet_size)
+
+    # clear remote Tofino switch configurations after probing
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(TOFINO_SSH_HOST, username=TOFINO_SSH_USER, password=TOFINO_SSH_PASSWORD)
+    logger.info("Clearing remote Tofino switch configurations after probing.")
+    clear_switch(ssh_client, context)
+    ssh_client.close()
+
 if __name__ == "__main__":
     main()

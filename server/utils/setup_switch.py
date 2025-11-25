@@ -11,21 +11,27 @@
 
 # This script will call scripts located in the remote tofino switch server via network.
 import os
-import subprocess
 import paramiko
+import argparse
 from loguru import logger
+
+TOFINO_SSH_HOST = os.getenv("TOFINO_SSH_HOST", "10.0.13.21")
+TOFINO_SSH_USER = os.getenv("TOFINO_SSH_USER", "p4")
+TOFINO_SSH_PASSWORD = os.getenv("TOFINO_SSH_PASSWORD", "rocks")
 
 def clear_switch(ssh_client, context: dict):
     """Clear existing configurations on the Tofino switch."""
     logger.info("Clearing existing switch configurations...")
-    SDE_PATH = context.get("SDE_PATH", "/home/p4/sde")
-    SDE_INSTALL_PATH = context.get("SDE_INSTALL_PATH", "/home/p4/sde/install")
-    CLEAR_SCRIPT_PATH = context.get("CLEAR_SCRIPT_PATH", "/home/p4/vartest/tofino/bfrt_utils/clear_switch.py")
+    try:
+        SETUPENV_SCRIPT_PATH = context.get("SETUPENV_SCRIPT_PATH")
+        CLEAR_SCRIPT_PATH = context.get("CLEAR_SCRIPT_PATH")
+    except KeyError as e:
+        logger.error(f"Missing configuration parameter: {e}")
+        raise 
 
-    clear_cmd = f"export SDE_PATH={SDE_PATH} && " \
-                f"export SDE_INSTALL_PATH={SDE_INSTALL_PATH} && " \
-                f"bfshell -b {CLEAR_SCRIPT_PATH}"
-    
+    clear_cmd = f"source {SETUPENV_SCRIPT_PATH} && bfshell -b {CLEAR_SCRIPT_PATH}"
+    logger.info(f"Executing switch clearing command: {clear_cmd}")
+
     stdin, stdout, stderr = ssh_client.exec_command(clear_cmd)
     exit_status = stdout.channel.recv_exit_status()
     if exit_status == 0:
@@ -37,23 +43,20 @@ def clear_switch(ssh_client, context: dict):
 def config_switch(ssh_client, context: dict):
     """Configure the Tofino switch according to the specified parameters."""
     logger.info("Configuring switch with new parameters...")
-    SDE_PATH = context.get("SDE_PATH", "/home/p4/sde")
-    SDE_INSTALL_PATH = context.get("SDE_INSTALL_PATH", "/home/p4/sde/install")
-    CONFIG_SCRIPT_PATH = context.get("CONFIG_SCRIPT_PATH", "/home/p4/vartest/tofino/bfrt_utils/config_switch.py")
-
     try:
-        pattern = context["pattern"]
-        rate = context["rate"]
-        packet_size = context["packet_size"]
+        SETUPENV_SCRIPT_PATH = context.get("SETUPENV_SCRIPT_PATH")
+        CONFIG_SCRIPT_PATH = context.get("CONFIG_SCRIPT_PATH")
+        PATTERN = context.get("PATTERN")
+        RATE = context.get("RATE")
+        PACKET_SIZE = context.get("PACKET_SIZE")
     except KeyError as e:
         logger.error(f"Missing configuration parameter: {e}")
         raise
 
-    config_cmd = f"export SDE_PATH={SDE_PATH} &&  " \
-                 f"export SDE_INSTALL_PATH={SDE_INSTALL_PATH} && " \
-                 f"bfshell -b {CONFIG_SCRIPT_PATH} " \
-                 f"--pattern {pattern} --rate {rate} --packet_size {packet_size}"
-                 
+    config_cmd = f"source {SETUPENV_SCRIPT_PATH} --pattern {PATTERN} --rate {RATE} --packet_size {PACKET_SIZE} && " \
+                 f"bfshell -b {CONFIG_SCRIPT_PATH} "
+    logger.info(f"Executing switch configuration command: {config_cmd}")
+
     stdin, stdout, stderr = ssh_client.exec_command(config_cmd)
     exit_status = stdout.channel.recv_exit_status()
     if exit_status == 0:
@@ -68,11 +71,25 @@ def setup_switch(ssh_client, context: dict):
     config_switch(ssh_client, context)
 
 if __name__ == "__main__":
-    # Example usage
-    SSH_HOST = os.getenv("TOFINO_SSH_HOST", "10.0.13.21")
-    SSH_USER = os.getenv("TOFINO_SSH_USER", "p4")
-    SSH_PASSWORD = os.getenv("TOFINO_SSH_PASSWORD", "rocks")
-    pattern = "uniform"
-    rate = 100
-    packet_size = 128
-    #setup_switch(SSH_HOST, SSH_USER, SSH_PASSWORD, pattern, rate, packet_size)
+    logger.info("Starting Tofino switch setup utility.")
+    parser = argparse.ArgumentParser(description="Setup Tofino switch for latency probing.")
+    parser.add_argument("--pattern", type=str, default="SINGLE", help="Traffic pattern (SINGLE or MULTIPLE)")
+    parser.add_argument("--rate", type=int, default=10, help="Packet send rate (Gbps)")
+    parser.add_argument("--packet_size", type=int, default=1024, help="Packet size in bytes")
+    args = parser.parse_args()
+
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(TOFINO_SSH_HOST, username=TOFINO_SSH_USER, password=TOFINO_SSH_PASSWORD)
+
+    setup_context = {
+        "PATTERN": args.pattern,
+        "RATE": args.rate,
+        "PACKET_SIZE": args.packet_size,
+        "SETUPENV_SCRIPT_PATH": os.environ.get("SETUPENV_SCRIPT_PATH"),
+        "CLEAR_SCRIPT_PATH": os.environ.get("CLEAR_SCRIPT_PATH"),
+        "CONFIG_SCRIPT_PATH": os.environ.get("CONFIG_SCRIPT_PATH")
+    }
+
+    setup_switch(ssh_client, setup_context)
+    ssh_client.close()
