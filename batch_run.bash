@@ -1,8 +1,9 @@
 #!/bin/bash
+source  ./server/set_env.bash
 
 TRAFFIC_PATTERNS=("SINGLE" "MULTIPLE")
-LINK_RATES=("10G" "25G" "50G" "100G")
-PACKET_SIZES=("64" "256" "512" "1024")
+LINK_RATES=(10 25 50 100)
+PACKET_SIZES=(64 256 1024 1500)
 RESULT_DIR="$(pwd)/results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p $RESULT_DIR
 
@@ -18,7 +19,7 @@ for pattern in "${TRAFFIC_PATTERNS[@]}"; do
 
             # Run the latency probe test
             # The running must be blocked cause we need different Tofino settings per test
-            sudo python3 ./server/probe_main.py --result_dir $RESULT_DIR
+            sudo -E python3 ./server/probe_main.py --result_dir $RESULT_DIR --pattern $pattern --rate $rate --packet_size $psize
 
             if [ $? -ne 0 ]; then
                 echo "Test failed for Pattern=$pattern, Rate=$rate, Packet Size=$psize"

@@ -12,12 +12,17 @@
 import argparse
 import multiprocessing
 import socket
+import sys
 import time
 import struct
 import ctypes
 import os
 import pandas as pd
 from loguru import logger
+
+# set level to INFO
+logger.remove()
+logger.add(sys.stdout, level="INFO")
 
 #======================= Configurations =======================#
 SENDER_NS = os.getenv("NS1", "fpganic_p1")
@@ -27,7 +32,7 @@ RECEIVER_IFACE = os.getenv("IFACE2", "enp202s0np1")
 SENDER_IP = os.getenv("IP1", "10.0.0.1")
 RECEIVER_IP = os.getenv("IP2", "10.0.0.2")
 
-PACKET_COUNT = int(os.getenv("PACKET_COUNT", "10"))
+PACKET_COUNT = int(os.getenv("PACKET_COUNT", "1000"))
 PACKET_SIZE = int(os.getenv("PACKET_SIZE", "256"))
 SEND_RATE = int(os.getenv("SEND_RATE", "1"))  # packets per second
 
@@ -84,7 +89,7 @@ def receiver_task(result_queue, stop_event):
             if len(data) >= HEADER_SIZE:  # Minimum size to unpack ts_h
                 (exp_id, seq_num, ingress_mac_ts, ingress_global_ts,
                  egress_global_ts, ingress_port, egress_port) = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
-                logger.debug(f"Packet received from {addr}, exp_id={exp_id}, seq_num={seq_num}")
+                logger.trace(f"Packet received from {addr}, exp_id={exp_id}, seq_num={seq_num}")
                 # Store full header information plus recv_time and latency
                 received_data[seq_num] = {
                     'exp_id': exp_id,
@@ -130,7 +135,7 @@ def sender_task(stop_event):
         header = struct.pack(HEADER_FORMAT, EXP_ID, seq_num, ingress_mac_ts, ingress_global_ts, egress_global_ts, ingress_port, egress_port)
         payload = header + bytes(max(0, PACKET_SIZE - len(header)))
         sock.sendto(payload, (RECEIVER_IP, EXP_PORT))
-        logger.debug(f"Sent packet seq_num={seq_num}")
+        logger.trace(f"Sent packet seq_num={seq_num}")
 
         #TODO: Add precise rate control here (like randomized inter-packet gap)
         time.sleep(1.0 / SEND_RATE)  # Control send rate
