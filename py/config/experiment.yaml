@@ -1,7 +1,0 @@
-# Experiment configuration example
-sequence:
-  - patterns/cbr_10g.yaml
-capture:
-  interface: enp1s0f0  # adjust to your NIC name
-  bpf: udp
-  output: results/raw/exp1.pcap
