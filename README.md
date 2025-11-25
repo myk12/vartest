@@ -62,3 +62,20 @@ This will:
 - Update `py/config/topo.yaml` to match your front-panel ports.
 - Update `scripts/build_p4.sh` to use your exact SDE P4 compiler.
 - If you prefer standalone BF-RT Python client instead of bfshell -b, adapt `py/core/bfrt_session.py`.
+
+
+## Usage
+
+1. **Configuration**: Set the environment variables for interfaces and IP addresses as needed:
+   - `IFACE1`: Sender interface (default: `eth1`)
+   - `IFACE2`: Receiver interface (default: `eth2`)
+   - `IP1`: Sender IP address (default: `10.0.0.1`)
+    - `IP2`: Receiver IP address (default: `10.0.0.2`)
+
+2. **Run the Module**: Execute the `probe_latency.py` script to start the sender and receiver processes. The sender will transmit a predefined number of packets, and the receiver will log the timestamps.
+
+
+## Results
+
+After the test completes, all latency data will be saved to `results/{MODE}_{LINK_SPEED}_{PACKET_SIZE}_{TIMESTAMP}.csv`.
+
