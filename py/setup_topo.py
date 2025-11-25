@@ -16,7 +16,7 @@ logger.add(sys.stdout, level="INFO")
 # `bfshell -b` which typically runs with a different CWD (the SDE install dir).
 # Prefer a path relative to this script file so imports work regardless of cwd.
 script_dir = os.path.dirname(os.path.abspath(__file__))
-candidate_py = os.path.abspath(os.path.join(script_dir, '..'))
+candidate_py = os.path.abspath(os.path.join(script_dir, '.'))
 if os.path.isdir(candidate_py) and candidate_py not in sys.path:
     sys.path.insert(0, candidate_py)
 else:
@@ -26,7 +26,7 @@ else:
         sys.path.insert(0, py_dir)
 
 P4_PROG = os.environ.get('TS_P4_PROG', 'ts_pipeline')
-TOPO_PATH = os.environ.get('TS_TOPO_YAML', os.path.join(os.path.dirname(__file__), '..', 'config', 'topo.yaml'))
+TOPO_PATH = os.environ.get('TS_TOPO_YAML', os.path.join(os.path.dirname(__file__), 'config', 'topo.yaml'))
 
 PKTGEN_APP_ID = int(os.environ.get('TS_PKTGEN_APP_ID', 1))  # Default application ID
 
