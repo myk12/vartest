@@ -49,11 +49,12 @@ def config_switch(ssh_client, context: dict):
         PATTERN = context.get("PATTERN")
         RATE = context.get("RATE")
         PACKET_SIZE = context.get("PACKET_SIZE")
+        TOPO_YAML = context.get("TOPO_YAML")
     except KeyError as e:
         logger.error(f"Missing configuration parameter: {e}")
         raise
 
-    config_cmd = f"source {SETUPENV_SCRIPT_PATH} --pattern {PATTERN} --rate {RATE} --packet_size {PACKET_SIZE} && " \
+    config_cmd = f"source {SETUPENV_SCRIPT_PATH} --pattern {PATTERN} --rate {RATE} --packet_size {PACKET_SIZE} --topo_yaml {TOPO_YAML} && " \
                  f"bfshell -b {CONFIG_SCRIPT_PATH} "
     logger.info(f"Executing switch configuration command: {config_cmd}")
 
@@ -76,6 +77,7 @@ if __name__ == "__main__":
     parser.add_argument("--pattern", type=str, default="SINGLE", help="Traffic pattern (SINGLE or MULTIPLE)")
     parser.add_argument("--rate", type=int, default=10, help="Packet send rate (Gbps)")
     parser.add_argument("--packet_size", type=int, default=1024, help="Packet size in bytes")
+    parser.add_argument("--topo_yaml", type=str, default="topo_fully.yaml", help="Topology YAML file")
     args = parser.parse_args()
 
     ssh_client = paramiko.SSHClient()
@@ -88,7 +90,8 @@ if __name__ == "__main__":
         "PACKET_SIZE": args.packet_size,
         "SETUPENV_SCRIPT_PATH": os.environ.get("SETUPENV_SCRIPT_PATH"),
         "CLEAR_SCRIPT_PATH": os.environ.get("CLEAR_SCRIPT_PATH"),
-        "CONFIG_SCRIPT_PATH": os.environ.get("CONFIG_SCRIPT_PATH")
+        "CONFIG_SCRIPT_PATH": os.environ.get("CONFIG_SCRIPT_PATH"),
+        "TOPO_YAML": args.topo_yaml
     }
 
     setup_switch(ssh_client, setup_context)

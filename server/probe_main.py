@@ -14,6 +14,7 @@ import ctypes
 import os
 import argparse
 import paramiko
+import time
 from loguru import logger
 from utils.setup_switch import clear_switch, config_switch
 from utils.start_probing import start_probing
@@ -21,8 +22,8 @@ from utils.start_probing import start_probing
 #======================= Configurations =======================#
 SENDER_NS = os.getenv("NS1", "fpganic_p1")
 RECEIVER_NS = os.getenv("NS2", "fpganic_p2")
-SENDER_IFACE = os.getenv("IFACE1", "enp202s0np0")
-RECEIVER_IFACE = os.getenv("IFACE2", "enp202s0np1")
+SENDER_IFACE = os.getenv("PORTNAME1", "enp202s0np0")
+RECEIVER_IFACE = os.getenv("PORTNAME2", "enp202s0np1")
 SENDER_IP = os.getenv("IP1", "10.0.0.1")
 RECEIVER_IP = os.getenv("IP2", "10.0.0.2")
 
@@ -33,6 +34,8 @@ TOFINO_SSH_PASSWORD = os.getenv("TOFINO_SSH_PASSWORD", "rocks")
 SETUPENV_SCRIPT_PATH = os.getenv("SETUPENV_SCRIPT_PATH", "/home/p4/vartest/tofino/set_env.bash")
 CLEAR_SCRIPT_PATH = os.getenv("CLEAR_SCRIPT_PATH", "/home/p4/vartest/tofino/bfrt/bfrt_clear_switch.py")
 CONFIG_SCRIPT_PATH = os.getenv("CONFIG_SCRIPT_PATH", "/home/p4/vartest/tofino/bfrt/bfrt_config_switch.py")
+FULL_CONFIG_SCRIPT_PATH = os.getenv("FULL_CONFIG_SCRIPT_PATH", "/home/p4/vartest/tofino/bfrt/bfrt_full_setup.py")
+FULL_TOPO_YAML_PATH = os.getenv("FULL_TOPO_YAML_PATH", "topo_fully.yaml")
 
 EXP_PORT = 17777
 
@@ -61,12 +64,14 @@ def main():
         exit(1)
     
     argparser = argparse.ArgumentParser(description="Tofino Latency Probing Module")
-    argparser.add_argument('--pattern', type=str, choices=['SINGLE', 'MULTIPLE'], default='SINGLE',
+    argparser.add_argument('--pattern', type=str, choices=['SINGLE', 'MULTIPLE', 'FULL'], default='SINGLE',
                            help='Traffic pattern to use for probing')
     argparser.add_argument('--rate', type=int, default=10,
                            help='Packet send rate (Gbps)')
     argparser.add_argument('--packet_size', type=int, default=1024,
                            help='Packet size in bytes')
+    argparser.add_argument('--topo_yaml', type=str, default='topo_fully.yaml',
+                           help='Topology YAML file')
     argparser.add_argument('--result_dir', type=str, default="./results",
                            help='Directory to save results')
     args = argparser.parse_args()
@@ -85,9 +90,10 @@ def main():
         "TOFINO_SSH_PASSWORD": TOFINO_SSH_PASSWORD,
         "SETUPENV_SCRIPT_PATH": SETUPENV_SCRIPT_PATH,
         "CLEAR_SCRIPT_PATH": CLEAR_SCRIPT_PATH,
-        "CONFIG_SCRIPT_PATH": CONFIG_SCRIPT_PATH,
+        "CONFIG_SCRIPT_PATH": FULL_CONFIG_SCRIPT_PATH,
+        "TOPO_YAML": args.topo_yaml
     }
-    
+
     logger.info("Context for switch setup: {}".format(context))
 
     # clear remote Tofino switch configurations
@@ -97,6 +103,9 @@ def main():
     logger.info("Configuring remote Tofino switch.")
     config_switch(ssh_client, context)
     ssh_client.close()
+    
+    # wait a bit for switch to stabilize
+    time.sleep(5)
 
     # start probing processes
     start_probing(result_dir=args.result_dir, pattern=args.pattern, rate=args.rate, packet_size=args.packet_size)

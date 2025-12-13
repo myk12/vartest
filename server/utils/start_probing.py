@@ -18,6 +18,10 @@ import struct
 import ctypes
 import os
 import pandas as pd
+import fcntl
+import errno
+import subprocess
+
 from loguru import logger
 
 # set level to INFO
@@ -27,14 +31,14 @@ logger.add(sys.stdout, level="INFO")
 #======================= Configurations =======================#
 SENDER_NS = os.getenv("NS1", "fpganic_p1")
 RECEIVER_NS = os.getenv("NS2", "fpganic_p2")
-SENDER_IFACE = os.getenv("IFACE1", "enp202s0np0")
-RECEIVER_IFACE = os.getenv("IFACE2", "enp202s0np1")
+SENDER_IFACE = os.getenv("PORTNAME1", "enp202s0np0")
+RECEIVER_IFACE = os.getenv("PORTNAME2", "enp202s0np1")
 SENDER_IP = os.getenv("IP1", "10.0.0.1")
 RECEIVER_IP = os.getenv("IP2", "10.0.0.2")
 
 PACKET_COUNT = int(os.getenv("PACKET_COUNT", "1000"))
 PACKET_SIZE = int(os.getenv("PACKET_SIZE", "256"))
-SEND_RATE = int(os.getenv("SEND_RATE", "1"))  # packets per second
+SEND_RATE = int(os.getenv("SEND_RATE", "10"))  # packets per second
 
 EXP_PORT = 17777
 
@@ -54,6 +58,31 @@ HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 libc = ctypes.CDLL("libc.so.6")
 CLONE_NEWNET = 0x40000000
 #==============================================================#
+# ioctl constants (may vary by platform)
+SIOCSHWTSTAMP = 0x89b0
+SIOCGHWTSTAMP = 0x89b1
+
+# SO_TIMESTAMPING
+SOF_TIMESTAMPING_TX_HARDWARE = 1 << 0
+SOF_TIMESTAMPING_TX_SOFTWARE = 1 << 1
+SOF_TIMESTAMPING_RX_HARDWARE = 1 << 2
+SOF_TIMESTAMPING_RX_SOFTWARE = 1 << 3
+SOF_TIMESTAMPING_SOFTWARE = 1 << 4
+SOF_TIMESTAMPING_SYS_HARDWARE = 1 << 5
+SOF_TIMESTAMPING_RAW_HARDWARE = 1 << 6
+SOF_TIMESTAMPING_OPT_ID = 1 << 7
+SOF_TIMESTAMPING_TX_SCHED = 1 << 8
+SOF_TIMESTAMPING_TX_ACK = 1 << 9
+SOF_TIMESTAMPING_OPT_CMSG = 1 << 10
+SOF_TIMESTAMPING_OPT_TSONLY = 1 << 11
+SOF_TIMESTAMPING_OPT_STATS = 1 << 12
+SOF_TIMESTAMPING_OPT_PKTINFO = 1 << 13
+SOF_TIMESTAMPING_OPT_TX_SWHW = 1 << 14
+SOF_TIMESTAMPING_LAST = SOF_TIMESTAMPING_OPT_TX_SWHW
+SOF_TIMESTAMPING_MASK = (SOF_TIMESTAMPING_LAST - 1) | SOF_TIMESTAMPING_LAST
+
+SO_TIMESTAMPING = 37
+SOF_TIMESTAMPING = 127
 
 def switch_namespace(ns_name):
     """Switch to the specified network namespace."""
@@ -69,6 +98,14 @@ def switch_namespace(ns_name):
         logger.error(f"Error switching namespace: {e}")
         exit(1)
 
+def enable_hw_timestamping(sock):
+    flags = (SOF_TIMESTAMPING_TX_HARDWARE |
+             SOF_TIMESTAMPING_RX_HARDWARE |
+             SOF_TIMESTAMPING_OPT_TSONLY |
+             SOF_TIMESTAMPING_OPT_PKTINFO)
+    sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING, flags)
+    logger.info("Hardware timestamping enabled on socket.")
+
 def receiver_task(result_queue, stop_event):
     """Receiver process to capture packets and measure latency."""
     # Switch to receiver namespace
@@ -76,20 +113,25 @@ def receiver_task(result_queue, stop_event):
 
     # Create UDP socket to receive packets
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    
+    # Bind to specific interface/device
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, RECEIVER_IFACE.encode('ascii'))
+    # Enable hardware timestamping on socket
+    enable_hw_timestamping(sock)
+    
     sock.bind((RECEIVER_IP, EXP_PORT))
     sock.settimeout(1.0)    # Set timeout to avoid blocking indefinitely
     logger.info("Receiver started on {}:{}".format(RECEIVER_IP, EXP_PORT))
-    
+
     received_data = {} # Key: seq_num, Value: ts_header
     while not stop_event.is_set():
         try:
             data, addr = sock.recvfrom(2048)
-            recv_time = time.time_ns()  # in nanoseconds
-
-            if len(data) >= HEADER_SIZE:  # Minimum size to unpack ts_h
+            if (len(data) >= HEADER_SIZE):
                 (exp_id, seq_num, ingress_mac_ts, ingress_global_ts,
                  egress_global_ts, ingress_port, egress_port) = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
-                logger.trace(f"Packet received from {addr}, exp_id={exp_id}, seq_num={seq_num}")
+                logger.trace(f"Received packet seq={seq_num} from {addr}")
+
                 # Store full header information plus recv_time and latency
                 received_data[seq_num] = {
                     'exp_id': exp_id,
@@ -99,9 +141,13 @@ def receiver_task(result_queue, stop_event):
                     'egress_global_ts': egress_global_ts,
                     'ingress_port': ingress_port,
                     'egress_port': egress_port,
-                    'recv_time': recv_time,
                 }
+                logger.info(f"Packet seq={seq_num} received with ingress_mac_ts={ingress_mac_ts}, ingress_global_ts={ingress_global_ts}, egress_global_ts={egress_global_ts}")
+            else:
+                logger.warning(f"Received packet too small: {len(data)} bytes")
         except socket.timeout:
+            continue
+        except BlockingIOError:
             continue
         except Exception as e:
             logger.error(f"Receiver error: {e}")
@@ -111,16 +157,29 @@ def receiver_task(result_queue, stop_event):
     sock.close()
     logger.info("Receiver stopped.")
     
-def sender_task(stop_event):
-    """Sender process to send packets."""
+def sender_task(stop_event, send_queue):
+    """Sender process to send packets. Sends TX hw timestamps back via send_queue."""
     # Switch to sender namespace
     switch_namespace(SENDER_NS)
 
     # Create UDP socket to send packets
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    logger.info("Sender started, sending to {}:9999".format(RECEIVER_IP))
-    
+    # Bind to specific interface/device
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, SENDER_IFACE.encode('ascii'))
+
+    # Bind to local address
+    sock.bind((SENDER_IP, 0))
+
+    # Connect to receiver address
+    sock.connect((RECEIVER_IP, EXP_PORT))
+
+    # Enable hardware timestamping on socket
+    enable_hw_timestamping(sock)
+
+    # non-blocking to read errqueue without blocking
+    sock.setblocking(False)
+    logger.info("Sender started, sending packets to {}:{}".format(RECEIVER_IP, EXP_PORT))
     for seq_num in range(PACKET_COUNT):
         if stop_event.is_set():
             break
@@ -134,7 +193,11 @@ def sender_task(stop_event):
         egress_port = 0
         header = struct.pack(HEADER_FORMAT, EXP_ID, seq_num, ingress_mac_ts, ingress_global_ts, egress_global_ts, ingress_port, egress_port)
         payload = header + bytes(max(0, PACKET_SIZE - len(header)))
-        sock.sendto(payload, (RECEIVER_IP, EXP_PORT))
+        try:
+            sock.send(payload)
+        except OSError as e:
+            logger.error(f"send error seq={seq_num}: {e}")
+            continue
         logger.trace(f"Sent packet seq_num={seq_num}")
 
         #TODO: Add precise rate control here (like randomized inter-packet gap)
@@ -165,7 +228,7 @@ def start_probing(result_dir: str = "./results", pattern: str = "SINGLE", rate: 
     time.sleep(1)  # Ensure receiver is ready before sender starts
     # Start sender process
     logger.info("Starting sender process.")
-    sender_process = multiprocessing.Process(target=sender_task, args=(stop_event,))
+    sender_process = multiprocessing.Process(target=sender_task, args=(stop_event, send_queue))
     sender_process.start()
     # Wait for sender to finish
     logger.info("Waiting for sender process to finish.")
@@ -183,6 +246,18 @@ def start_probing(result_dir: str = "./results", pattern: str = "SINGLE", rate: 
     if not received_data:
         logger.warning("No packets were received.")
         return
+    # collect sent timestamps from send_queue
+    sent_timestamps = {}
+    try:
+        while True:
+            seq, ts = send_queue.get_nowait()
+            sent_timestamps[int(seq)] = int(ts)
+    except Exception:
+        pass
+
+    # Merge sent_timestamps into received_data rows
+    for seq, row in list(received_data.items()):
+        row['tx_hw_ts'] = sent_timestamps.get(seq)
     # sort by sequence number for stable ordering
     rows = [received_data[k] for k in sorted(received_data.keys())]
     df = pd.DataFrame(rows)
@@ -197,12 +272,14 @@ def start_probing(result_dir: str = "./results", pattern: str = "SINGLE", rate: 
 if __name__ == "__main__":
     logger.info("This module is intended to be imported and used by probe_main.py.")
     parser = argparse.ArgumentParser(description="Start Tofino latency probing.")
-    parser.add_argument('--pattern', type=str, choices=['SINGLE', 'MULTIPLE'], default='SINGLE',
+    parser.add_argument('--pattern', type=str, choices=['SINGLE', 'MULTIPLE', 'FULLY'], default='SINGLE',
                         help='Traffic pattern to use for probing')
     parser.add_argument('--rate', type=int, default=10,
                         help='Packet send rate (Gbps)')
     parser.add_argument('--packet_size', type=int, default=1024,
                         help='Packet size in bytes')
+    parser.add_argument('--topo_yaml', type=str, default='topo_fully.yaml',
+                        help='Topology YAML file')
     args = parser.parse_args()
 
     result_dir = "./results"
