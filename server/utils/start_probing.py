@@ -18,6 +18,7 @@ import struct
 import ctypes
 import os
 import pandas as pd
+import select
 import fcntl
 import errno
 import subprocess
@@ -81,7 +82,7 @@ SOF_TIMESTAMPING_OPT_TX_SWHW = 1 << 14
 SOF_TIMESTAMPING_LAST = SOF_TIMESTAMPING_OPT_TX_SWHW
 SOF_TIMESTAMPING_MASK = (SOF_TIMESTAMPING_LAST - 1) | SOF_TIMESTAMPING_LAST
 
-SO_TIMESTAMPING = 37
+SO_TIMESTAMPING = 37     # linux/socket.h
 SOF_TIMESTAMPING = 127
 
 def switch_namespace(ns_name):
@@ -100,10 +101,12 @@ def switch_namespace(ns_name):
 
 def enable_hw_timestamping(sock):
     flags = (SOF_TIMESTAMPING_TX_HARDWARE |
+             SOF_TIMESTAMPING_TX_SOFTWARE |
              SOF_TIMESTAMPING_RX_HARDWARE |
-             SOF_TIMESTAMPING_OPT_TSONLY |
-             SOF_TIMESTAMPING_OPT_PKTINFO)
-    sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING, flags)
+             SOF_TIMESTAMPING_RAW_HARDWARE |
+             SOF_TIMESTAMPING_SOFTWARE)
+
+    sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING, struct.pack('i', flags))
     logger.info("Hardware timestamping enabled on socket.")
 
 def receiver_task(result_queue, stop_event):
@@ -112,7 +115,7 @@ def receiver_task(result_queue, stop_event):
     switch_namespace(RECEIVER_NS)
 
     # Create UDP socket to receive packets
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     
     # Bind to specific interface/device
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, RECEIVER_IFACE.encode('ascii'))
@@ -120,39 +123,44 @@ def receiver_task(result_queue, stop_event):
     enable_hw_timestamping(sock)
     
     sock.bind((RECEIVER_IP, EXP_PORT))
-    sock.settimeout(1.0)    # Set timeout to avoid blocking indefinitely
+    #sock.settimeout(10)    # Set timeout to avoid blocking indefinitely
     logger.info("Receiver started on {}:{}".format(RECEIVER_IP, EXP_PORT))
 
     received_data = {} # Key: seq_num, Value: ts_header
-    while not stop_event.is_set():
-        try:
-            data, addr = sock.recvfrom(2048)
-            if (len(data) >= HEADER_SIZE):
-                (exp_id, seq_num, ingress_mac_ts, ingress_global_ts,
-                 egress_global_ts, ingress_port, egress_port) = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
-                logger.trace(f"Received packet seq={seq_num} from {addr}")
+    received_count = 0  # We assume that every sent packet will be received for simplicity
+    while received_count < PACKET_COUNT:
+        data, ancdata, flags, addr = sock.recvmsg(2048, 512)
+        (exp_id, seq_num, ingress_mac_ts, ingress_global_ts,
+        egress_global_ts, ingress_port, egress_port) = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
+        logger.trace(f"Received packet seq={seq_num} from {addr}")
+        # Store full header information plus recv_time and latency
+        received_data[seq_num] = {
+            'exp_id': exp_id,
+            'seq': seq_num,
+            'ingress_mac_ts': ingress_mac_ts,
+            'ingress_global_ts': ingress_global_ts,
+            'egress_global_ts': egress_global_ts,
+            'ingress_port': ingress_port,
+            'egress_port': egress_port,
+        }
+        logger.info(f"Packet seq={seq_num} received with ingress_mac_ts={ingress_mac_ts}, ingress_global_ts={ingress_global_ts}, egress_global_ts={egress_global_ts}")
+        # Check ancillary data for timestamps
+        for cmsg_level, cmsg_type, cmsg_data in ancdata:
+            if cmsg_level == socket.SOL_SOCKET and cmsg_type == SO_TIMESTAMPING:
+                logger.info(f"Received ancillary data for seq={seq_num}")
+                # Unpack three timestamps (software, hardware, raw hardware)
+                ts = struct.unpack('=qqqqqq', cmsg_data[:48])
+                sw_ts = (ts[0], ts[1])  # seconds, nanoseconds
+                hw_ts = (ts[2], ts[3])
+                raw_hw_ts = (ts[4], ts[5])
+                logger.info(f"Ancillary timestamps for seq={seq_num}: SW={sw_ts}, HW={hw_ts}, RAW_HW={raw_hw_ts}")
+                received_data[seq_num]['rx_sw_ts'] = sw_ts[0] * 1_000_000_000 + sw_ts[1]
+                received_data[seq_num]['rx_hw_ts'] = hw_ts[0] * 1_000_000_000 + hw_ts[1]
+                received_data[seq_num]['rx_raw_hw_ts'] = raw_hw_ts[0] * 1_000_000_000 + raw_hw_ts[1]
+        received_count += 1
+        logger.info(f"Total packets received: {received_count}/{PACKET_COUNT}")
 
-                # Store full header information plus recv_time and latency
-                received_data[seq_num] = {
-                    'exp_id': exp_id,
-                    'seq': seq_num,
-                    'ingress_mac_ts': ingress_mac_ts,
-                    'ingress_global_ts': ingress_global_ts,
-                    'egress_global_ts': egress_global_ts,
-                    'ingress_port': ingress_port,
-                    'egress_port': egress_port,
-                }
-                logger.info(f"Packet seq={seq_num} received with ingress_mac_ts={ingress_mac_ts}, ingress_global_ts={ingress_global_ts}, egress_global_ts={egress_global_ts}")
-            else:
-                logger.warning(f"Received packet too small: {len(data)} bytes")
-        except socket.timeout:
-            continue
-        except BlockingIOError:
-            continue
-        except Exception as e:
-            logger.error(f"Receiver error: {e}")
-            break
-
+    logger.info("All packets received.")
     result_queue.put(received_data)
     sock.close()
     logger.info("Receiver stopped.")
@@ -163,7 +171,7 @@ def sender_task(stop_event, send_queue):
     switch_namespace(SENDER_NS)
 
     # Create UDP socket to send packets
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 
     # Bind to specific interface/device
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, SENDER_IFACE.encode('ascii'))
@@ -172,14 +180,18 @@ def sender_task(stop_event, send_queue):
     sock.bind((SENDER_IP, 0))
 
     # Connect to receiver address
-    sock.connect((RECEIVER_IP, EXP_PORT))
+    #sock.connect((RECEIVER_IP, EXP_PORT))
 
     # Enable hardware timestamping on socket
     enable_hw_timestamping(sock)
 
     # non-blocking to read errqueue without blocking
     sock.setblocking(False)
+
     logger.info("Sender started, sending packets to {}:{}".format(RECEIVER_IP, EXP_PORT))
+    tx_seq = 0
+    sent_data = {}
+    
     for seq_num in range(PACKET_COUNT):
         if stop_event.is_set():
             break
@@ -194,15 +206,74 @@ def sender_task(stop_event, send_queue):
         header = struct.pack(HEADER_FORMAT, EXP_ID, seq_num, ingress_mac_ts, ingress_global_ts, egress_global_ts, ingress_port, egress_port)
         payload = header + bytes(max(0, PACKET_SIZE - len(header)))
         try:
-            sock.send(payload)
+            sock.sendto(payload, (RECEIVER_IP, EXP_PORT))
         except OSError as e:
             logger.error(f"send error seq={seq_num}: {e}")
             continue
         logger.trace(f"Sent packet seq_num={seq_num}")
 
+        # Read TX timestamps from error queue
+        while True:
+            try:
+                _, ancdata, _, _ = sock.recvmsg(0, 512, socket.MSG_ERRQUEUE)
+            except BlockingIOError:
+                logger.info(f"No TX timestamp available yet for seq={tx_seq}")
+                break
+            except OSError as e:
+                logger.error(f"recvmsg error on errqueue for seq={tx_seq}: {e}")
+                break
+            for cmsg_level, cmsg_type, cmsg_data in ancdata:
+                if cmsg_level == socket.SOL_SOCKET and cmsg_type == SO_TIMESTAMPING:
+                    logger.info(f"Received TX ancillary data for seq={tx_seq}")
+                    ts = struct.unpack('=qqqqqq', cmsg_data[:48])
+                    sw_ts = (ts[0], ts[1])  # seconds, nanoseconds
+                    hw_ts = (ts[2], ts[3])
+                    raw_hw_ts = (ts[4], ts[5])
+                    logger.info(f"TX Ancillary timestamps for seq={tx_seq}: SW={sw_ts}, HW={hw_ts}, RAW_HW={raw_hw_ts}")
+                    tx_sw_ts = sw_ts[0] * 1_000_000_000 + sw_ts[1]
+                    tx_hw_ts = hw_ts[0] * 1_000_000_000 + hw_ts[1]
+                    tx_raw_hw_ts = raw_hw_ts[0] * 1_000_000_000 + raw_hw_ts[1]
+                    # Send back the TX hw timestamp via send_queue
+                    sent_data[tx_seq] = {
+                        'tx_sw_ts': tx_sw_ts,
+                        'tx_hw_ts': tx_hw_ts,
+                        'tx_raw_hw_ts': tx_raw_hw_ts,
+                    }
+                    tx_seq += 1
+
         #TODO: Add precise rate control here (like randomized inter-packet gap)
         time.sleep(1.0 / SEND_RATE)  # Control send rate
 
+    while tx_seq < PACKET_COUNT:
+        try:
+            _, ancdata, _, _ = sock.recvmsg(0, 512, socket.MSG_ERRQUEUE)
+        except BlockingIOError:
+            logger.info(f"No more TX timestamp available yet for seq={tx_seq}")
+            break
+        except OSError as e:
+            logger.error(f"recvmsg error on errqueue for seq={tx_seq}: {e}")
+            break
+        for cmsg_level, cmsg_type, cmsg_data in ancdata:
+            if cmsg_level == socket.SOL_SOCKET and cmsg_type == SO_TIMESTAMPING:
+                logger.info(f"Received TX ancillary data for seq={tx_seq}")
+                ts = struct.unpack('=qqqqqq', cmsg_data[:48])
+                sw_ts = (ts[0], ts[1])  # seconds, nanoseconds
+                hw_ts = (ts[2], ts[3])
+                raw_hw_ts = (ts[4], ts[5])
+                logger.info(f"TX Ancillary timestamps for seq={tx_seq}: SW={sw_ts}, HW={hw_ts}, RAW_HW={raw_hw_ts}")
+                tx_sw_ts = sw_ts[0] * 1_000_000_000 + sw_ts[1]
+                tx_hw_ts = hw_ts[0] * 1_000_000_000 + hw_ts[1]
+                tx_raw_hw_ts = raw_hw_ts[0] * 1_000_000_000 + raw_hw_ts[1]
+                # Send back the TX hw timestamp via send_queue
+                sent_data[tx_seq] = {
+                    'tx_sw_ts': tx_sw_ts,
+                    'tx_hw_ts': tx_hw_ts,
+                    'tx_raw_hw_ts': tx_raw_hw_ts,
+                }           
+                tx_seq += 1
+
+    # Send all sent_data back via send_queue
+    send_queue.put(sent_data)
     sock.close()
     logger.info("Sender stopped.")
 
@@ -214,6 +285,7 @@ def save_results(df: pd.DataFrame, result_dir: str, filename: str):
 
 def start_probing(result_dir: str = "./results", pattern: str = "SINGLE", rate: int = 10, packet_size: int = 1024):
     logger.info("Starting probing process.")
+
     # Create a queue to collect results from receiver
     mgr = multiprocessing.Manager()
     recv_queue = mgr.Queue()
@@ -233,11 +305,17 @@ def start_probing(result_dir: str = "./results", pattern: str = "SINGLE", rate: 
     # Wait for sender to finish
     logger.info("Waiting for sender process to finish.")
     sender_process.join()
+    sent_data = send_queue.get()
+    logger.info(f"Sender process finished, sent_data collected with {len(sent_data)} entries.")
+    if not sent_data:
+        logger.warning("No sent data collected from sender.")
+        return
     
     # Leave some time for receiver to process remaining packets
     logger.info("Sender finished. Allowing receiver to finalize.")
     time.sleep(3)
     stop_event.set()
+    logger.info("stop event set, waiting for receiver to finish.")
     receiver_process.join()
     # Collect results from receiver
     logger.info("Collecting results from receiver.")
@@ -246,20 +324,30 @@ def start_probing(result_dir: str = "./results", pattern: str = "SINGLE", rate: 
     if not received_data:
         logger.warning("No packets were received.")
         return
-    # collect sent timestamps from send_queue
-    sent_timestamps = {}
-    try:
-        while True:
-            seq, ts = send_queue.get_nowait()
-            sent_timestamps[int(seq)] = int(ts)
-    except Exception:
-        pass
 
-    # Merge sent_timestamps into received_data rows
-    for seq, row in list(received_data.items()):
-        row['tx_hw_ts'] = sent_timestamps.get(seq)
-    # sort by sequence number for stable ordering
-    rows = [received_data[k] for k in sorted(received_data.keys())]
+    # join sent_data and received_data based on seq number
+    rows = []
+    for seq_num, recv_info in received_data.items():
+        row = {
+            'seq': seq_num,
+            'exp_id': recv_info['exp_id'],
+            'ingress_mac_ts': recv_info['ingress_mac_ts'],
+            'ingress_global_ts': recv_info['ingress_global_ts'],
+            'egress_global_ts': recv_info['egress_global_ts'],
+            'ingress_port': recv_info['ingress_port'],
+            'egress_port': recv_info['egress_port'],
+            'rx_sw_ts': recv_info.get('rx_sw_ts', None),
+            'rx_hw_ts': recv_info.get('rx_hw_ts', None),
+            'rx_raw_hw_ts': recv_info.get('rx_raw_hw_ts', None),
+        }
+        sent_info = sent_data.get(seq_num, {})
+        row.update({
+            'tx_sw_ts': sent_info.get('tx_sw_ts', None),
+            'tx_hw_ts': sent_info.get('tx_hw_ts', None),
+            'tx_raw_hw_ts': sent_info.get('tx_raw_hw_ts', None),
+        })
+        rows.append(row)
+
     df = pd.DataFrame(rows)
     logger.info(f"Converted {len(df)} packets to DataFrame with columns: {df.columns.tolist()}")
     logger.debug(f"DataFrame head:\n{df.head().to_string()}")
@@ -272,6 +360,8 @@ def start_probing(result_dir: str = "./results", pattern: str = "SINGLE", rate: 
 if __name__ == "__main__":
     logger.info("This module is intended to be imported and used by probe_main.py.")
     parser = argparse.ArgumentParser(description="Start Tofino latency probing.")
+    parser.add_argument('--hw_timestamping', action='store_true',
+                        help='Enable hardware timestamping')
     parser.add_argument('--pattern', type=str, choices=['SINGLE', 'MULTIPLE', 'FULLY'], default='SINGLE',
                         help='Traffic pattern to use for probing')
     parser.add_argument('--rate', type=int, default=10,

@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from loguru import logger
 
+EGRESS_FPGA_STR="tx_raw_hw_ts"
+INGRESS_FPGA_STR="rx_raw_hw_ts"
 IN_MAC_STR="ingress_mac_ts"
 INGRESS_STR="ingress_global_ts"
 EGRESS_STR="egress_global_ts"
@@ -57,9 +59,10 @@ class PlotVarResult:
         logger.info(f"Total unique rates: {num_rates}, Total unique packet sizes: {num_packet_sizes}")
         # subplot row1: num_rates columns, 1 row, for each figure plot CDF of different packet sizes
         # subplot row2: num_packet_sizes colums, 1 row, for each figure plot CDF of different packet sizes
-        fig, axes = plt.subplots(2, num_rates, figsize=(5 * num_rates, 4 * 2), sharex=False)
+        # subplot row3: num_rates columns, 1 row, for each figure plot CDF of different packet sizes
+        fig, axes = plt.subplots(3, num_rates, figsize=(5 * num_rates, 4 * 2), sharex=False)
         if num_rates == 1:
-            axes = axes.reshape(2, 1)  # Make it 2D array for consistency
+            axes = axes.reshape(3, 1)  # Make it 2D array for consistency
         for i, (rate, group) in enumerate(self.data.groupby('Rate_Gbps')):
             ax = axes[0, i]
             for packet_size, size_group in group.groupby('Packet_Size_B'):
@@ -79,6 +82,16 @@ class PlotVarResult:
             ax.set_ylabel('CDF')
             #ax.set_xscale('log')
             ax.legend(title='Rate')
+            ax.grid(True)
+        for i, (rate, group) in enumerate(self.data.groupby('Rate_Gbps')):
+            ax = axes[2, i]
+            for packet_size, size_group in group.groupby('Packet_Size_B'):
+                sns.ecdfplot(size_group[INGRESS_FPGA_STR] - size_group[EGRESS_FPGA_STR], ax=ax, label=f'Packet Size: {packet_size}B')
+            ax.set_title(f'Latency Density for Rate: {rate}Gbps (All Patterns)')
+            ax.set_xlabel('Latency (ns)')
+            ax.set_ylabel('Density')
+            #ax.set_xscale('log')
+            ax.legend(title='Packet Size')
             ax.grid(True)
         plt.tight_layout()
         output_file = os.path.join(self.output_dir, 'variance_all_patterns.png')
