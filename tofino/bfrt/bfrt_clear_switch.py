@@ -23,6 +23,7 @@ def main():
     # Stop pktgen app
     logger.info("Stopping pktgen application...")
     bfrt_pktgen.app_cfg.mod_with_trigger_timer_periodic(app_id=1, app_enable=False)
+    bfrt_pktgen.app_cfg.mod_with_trigger_timer_periodic(app_id=2, app_enable=False)
 
     # Clear pktgen pkt_buffer
     logger.info("Clearing pktgen packet buffer...")

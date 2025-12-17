@@ -49,6 +49,11 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
+    --topo_yaml)
+      TOPO_YAML=$PROJ_ROOT/tofino/"$2"
+      shift # past argument
+      shift # past value
+      ;;
     *)    # unknown option
       echo "Unknown option: $1"
       shift # past argument

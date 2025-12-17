@@ -28,19 +28,18 @@ fwd_rules:
   SINGLE:
     bi-directional:
       - [ p25_0, p26_0 ]  # FPGA to FPGA
-      - [ p27_0, p28_0 ]
-      - [ p29_0, p30_0 ]
-      - [ p31_0, p32_0 ]
     uni-directional:
-      - [pktgen, p26_0 ] # pktgen to FPGA
+      - [pktgen1, p25_0 ] # pktgen to FPGA
+      - [pktgen2, p26_0 ] # pktgen to FPGA
 
   MULTIPLE:
     bi-directional:
       - [ p25_0, p26_0 ]  # FPGA to FPGA
     uni-directional:
-      - [pktgen, p27_0 ] # pktgen to loop
-      - [p27_0, p28_0 ] # loop to loop
+      - [pktgen1, p27_0 ] # pktgen to loop
       - [p28_0, p29_0 ] # loop to loop
-      - [p29_0, p30_0 ] # loop to loop
       - [p30_0, p31_0 ] # loop to loop
-      - [p31_0, p32_0 ] # loop to loop
+      - [pktgen2, p28_0 ] # pktgen to loop
+      - [p27_0, p30_0 ] # loop to loop
+      - [p29_0, p32_0 ] # loop to loop
+

@@ -1,7 +1,7 @@
 #!/bfshell/bin/env python3
 # -*- coding: utf-8 -*-
 # author: Yuke Ma
-# date: 2024-06-15
+# date: 2025-11-28
 # description: Tofino switch setup utility for latency probing
 
 
@@ -37,7 +37,7 @@ SRC_IP = os.environ.get('SRC_IP', "10.0.0.1")
 DST_IP = os.environ.get('DST_IP', "10.0.0.2")
 SRC_PORT = int(os.environ.get('SRC_PORT', '1234'))
 DST_PORT = int(os.environ.get('DST_PORT', '5678'))
-TOPO_YAML_PATH = os.environ.get('TOPO_YAML', f'{PROJ_ROOT}/tofino/topo.yaml')
+TOPO_YAML_PATH = os.environ.get('TOPO_YAML', f'{PROJ_ROOT}/tofino/topo_fully.yaml')
 
 ###############################################
 #               Helper Functions
@@ -93,28 +93,18 @@ def parser_topology(bfrt, yaml_path: str) -> dict:
         'dev_port': PKTGEN1_PORT_ID
     }
 
-    topo_config['ports']['pktgen2'] = {
-        'conn_id': PKTGEN2_PORT_ID,
-        'chnl_id': 0,
-        'FPGA': False,
-        'dev_port': PKTGEN2_PORT_ID
-    }
-
     # parse farwading rules info
     topo_fwd_rules = {}
-    for name, spec in topo.get('fwd_rules', {}).items():
-        fwd_rule_attrs = {}
-        bi_dir_rules = []
-        for rule in spec.get('bi-directional', []):
-            bi_dir_rules.append((rule[0], rule[1]))
-        fwd_rule_attrs['bi-directional'] = bi_dir_rules
+    fwd_rules = topo.get('fwd_rules', {})
 
-        uni_dir_rules = []
-        for rule in spec.get('uni-directional', []):
-            uni_dir_rules.append((rule[0], rule[1]))
-        fwd_rule_attrs['uni-directional'] = uni_dir_rules
+    # 1. bi-directional rules
+    bi_dir_rules = fwd_rules.get('bi-directional', [])
+    topo_fwd_rules['bi-directional'] = bi_dir_rules
 
-        topo_fwd_rules[name] = fwd_rule_attrs
+    # 2. uni-directional rules
+    uni_dir_rules = fwd_rules.get('uni-directional', [])
+    topo_fwd_rules['uni-directional'] = uni_dir_rules
+
     topo_config['fwd_rules'] = topo_fwd_rules
 
     return topo_config
@@ -122,61 +112,6 @@ def parser_topology(bfrt, yaml_path: str) -> dict:
 ################################################
 #            Switch Configuration Functions
 ################################################
-def config_SINGLE_pattern(bfrt, topo_config):
-    """Configure switch for SINGLE pattern."""
-    logger.info("Configuring switch for SINGLE pattern...")
-    # Add specific configuration for SINGLE pattern
-    fwd_rules = topo_config.get('fwd_rules', {}).get('SINGLE', {})
-    fwd_table = bfrt.ts_pipeline.pipe.Ingress.pass_through
-    
-    for src_port_name, dst_port_name in fwd_rules.get('bi-directional', []):
-        src_port = topo_config['ports'][src_port_name]['dev_port']
-        dst_port = topo_config['ports'][dst_port_name]['dev_port']
-        logger.info(f"Adding bi-directional rule: {src_port_name} ({src_port}) <-> {dst_port_name} ({dst_port})")
-        # Add table entries to bfrt here
-        try:
-            fwd_table.add_with_set_port(ingress_port=src_port, egress_port=dst_port)
-            fwd_table.add_with_set_port(ingress_port=dst_port, egress_port=src_port)
-        except Exception as e:
-            logger.error(f"Failed to add table entry: {e}")
-    
-    for src_port_name, dst_port_name in fwd_rules.get('uni-directional', []):
-        src_port = topo_config['ports'][src_port_name]['dev_port']
-        dst_port = topo_config['ports'][dst_port_name]['dev_port']
-        logger.info(f"Adding uni-directional rule: {src_port_name} ({src_port}) -> {dst_port_name} ({dst_port})")
-        # Add table entries to bfrt here
-        try:
-            fwd_table.add_with_set_port(ingress_port=src_port, egress_port=dst_port)
-        except Exception as e:
-            logger.error(f"Failed to add table entry: {e}")
-
-def config_MULTIPLE_pattern(bfrt, topo_config: dict):
-    """Configure switch for MULTIPLE pattern."""
-    logger.info("Configuring switch for MULTIPLE pattern...")
-    # Add specific configuration for MULTIPLE pattern
-    fwd_rules = topo_config.get('fwd_rules', {}).get('MULTIPLE', {})
-    fwd_table = bfrt.ts_pipeline.pipe.Ingress.pass_through
-    for src_port_name, dst_port_name in fwd_rules.get('bi-directional', []):
-        src_port = topo_config['ports'][src_port_name]['dev_port']
-        dst_port = topo_config['ports'][dst_port_name]['dev_port']
-        logger.info(f"Adding bi-directional rule: {src_port_name} ({src_port}) <-> {dst_port_name} ({dst_port})")
-        # Add table entries to bfrt here
-        try:
-            fwd_table.add_with_set_port(ingress_port=src_port, egress_port=dst_port)
-            fwd_table.add_with_set_port(ingress_port=dst_port, egress_port=src_port)
-        except Exception as e:
-            logger.error(f"Failed to add table entry: {e}")
-    
-    for src_port_name, dst_port_name in fwd_rules.get('uni-directional', []):
-        src_port = topo_config['ports'][src_port_name]['dev_port']
-        dst_port = topo_config['ports'][dst_port_name]['dev_port']
-        logger.info(f"Adding uni-directional rule: {src_port_name} ({src_port}) -> {dst_port_name} ({dst_port})")
-        # Add table entries to bfrt here
-        try:
-            fwd_table.add_with_set_port(ingress_port=src_port, egress_port=dst_port)
-        except Exception as e:
-            logger.error(f"Failed to add table entry: {e}")
-
 def config_pktgen_buffer(bfrt, rate: int, packet_size: int):
     """Configure pktgen buffer with specified rate and packet size."""
     logger.info("Configuring pktgen buffer...")
@@ -193,14 +128,6 @@ def config_pktgen_buffer(bfrt, rate: int, packet_size: int):
         buffer=list(packet.build())
     )
     buffer_entry.push()
-
-    buffer_entry2 = pktgen_buffer.entry(
-        pkt_buffer_offset=len(packet),
-        pkt_buffer_size=len(packet),
-        buffer=list(packet.build())
-    )
-    buffer_entry2.push()
-
     logger.info("Packet written to pktgen buffer.")
 
 def config_pktgen_app(bfrt, rate: int, packet_size: int):
@@ -232,26 +159,6 @@ def config_pktgen_app(bfrt, rate: int, packet_size: int):
     app1_entry.push()
     logger.info("Pktgen application 1 configured.")
 
-    app2_entry = pktgen_app.entry_with_trigger_timer_periodic(
-        app_id = PKTGEN2_APP_ID,
-        app_enable = True,
-        pkt_buffer_offset = 0,
-        pkt_len = packet_size,
-        pipe_local_source_port = PKTGEN2_PORT_ID,
-        increment_source_port = False,
-        timer_nanosec = timer_ns,
-        batch_count_cfg = 0,
-        packets_per_batch_cfg = 0,
-        ibg = 0, ibg_jitter = 0,
-        ipg = 0, ipg_jitter = 0,
-        batch_counter = 0, pkt_counter = 0, trigger_counter = 0,
-        offset_len_from_recir_pkt_enable = False,
-        source_port_wrap_max = 0,
-        assigned_chnl_id = PKTGEN2_PORT_ID,
-    )
-    app2_entry.push()
-    logger.info("Pktgen application 2 configured.")
-
 def config_pktgen_ports(bfrt):
     """Configure pktgen ports."""
     logger.info("Configuring pktgen ports...")
@@ -262,28 +169,50 @@ def config_pktgen_ports(bfrt):
         pktgen_enable=True
     )
     port1_entry.push()
-    
-    port2_entry = pktgen_port.entry(
-        dev_port=PKTGEN2_PORT_ID,
-        pktgen_enable=True
-    )
-    port2_entry.push()
+
     logger.info("Pktgen ports configured.")
 
-def configure_forward_rules(bfrt, topo_config, pattern: str):
+def configure_forward_rules(bfrt, topo_config: dict):
     """Configure the Tofino switch according to the specified parameters."""
     logger.info("Configuring forwarding rules...")
-    # Example configuration logic based on pattern
-    if pattern == "SINGLE":
-        logger.info("Configuring SINGLE pattern...")
-        config_SINGLE_pattern(bfrt, topo_config)
-    elif pattern == "MULTIPLE":
-        logger.info("Configuring MULTIPLE pattern...")
-        config_MULTIPLE_pattern(bfrt, topo_config)
-    else:
-        logger.error(f"Unsupported pattern: {pattern}")
-        sys.exit(1)
-
+    # Config forwarding rules based on topology config
+    fwd_rules = topo_config.get('fwd_rules', {})
+    fwd_table = bfrt.ts_pipeline.pipe.Ingress.pass_through
+    # 1. Bi-directional rules 
+    bi_dir_rules = fwd_rules.get('bi-directional', [])
+    for rule in bi_dir_rules:
+        logger.info(f"Configuring bi-directional rule: {rule}")
+        # Add logic to configure bi-directional forwarding rules here
+        src_port_name, dst_port_name = rule
+        src_port = topo_config['ports'][src_port_name]['dev_port']
+        dst_port = topo_config['ports'][dst_port_name]['dev_port']
+        try:
+            fwd_table.add_with_set_port(ingress_port=src_port, egress_port=dst_port)
+            fwd_table.add_with_set_port(ingress_port=dst_port, egress_port=src_port)
+        except Exception as e:
+            if 'Already' in str(e):
+                logger.warning(f"Rule already exists: {e}")
+            else:
+                logger.error(f"Failed to add table entry: {e}")
+                raise e
+        
+    # 2. Uni-directional rules
+    uni_dir_rules = fwd_rules.get('uni-directional', [])
+    for rule in uni_dir_rules:
+        logger.info(f"Configuring uni-directional rule: {rule}")
+        # Add logic to configure uni-directional forwarding rules here
+        src_port_name, dst_port_name = rule
+        src_port = topo_config['ports'][src_port_name]['dev_port']
+        dst_port = topo_config['ports'][dst_port_name]['dev_port']
+        try:
+            fwd_table.add_with_set_port(ingress_port=src_port, egress_port=dst_port)
+        except Exception as e:
+            if 'Already' in str(e):
+                logger.warning(f"Rule already exists: {e}")
+            else:
+                logger.error(f"Failed to add table entry: {e}")
+                raise e
+    
     logger.info("Forwarding rules configured.")
 
 ###########################################
@@ -297,7 +226,6 @@ def main():
     # In future we can improve this by using bfrt APIs to pass parameters directly.
     # Parse command line arguments
     #parser = argparse.ArgumentParser(description="Configure Tofino switch for latency probing.")
-    #parser.add_argument('--pattern', type=str, default="SINGLE", help='Traffic pattern (e.g., SINGLE, MULTIPLE)')
     #parser.add_argument('--rate', type=int, default=10, help='Packet sending rate(Gbps)')
     #parser.add_argument('--packet_size', type=int, default=1024, help='Size of each packet (bytes)')
     #args = parser.parse_args()
@@ -309,16 +237,14 @@ def main():
     with open("/tmp/tofino_env.json", "r") as f:
         env_config = json.load(f)
 
-    pattern = env_config.get("PATTERN", "SINGLE")
     rate = int(env_config.get("RATE", 10))
     packet_size = int(env_config.get("PACKET_SIZE", 1024))
     topo_yaml = env_config.get("TOPO_YAML", TOPO_YAML_PATH)
 
-    logger.info(f"Configuration parameters - Pattern: {pattern}, Rate: {rate} Gbps, Packet Size: {packet_size} bytes")
     topo_config = parser_topology(bfrt, topo_yaml)
 
     # 1. Configure forwarding rules
-    configure_forward_rules(bfrt, topo_config, pattern)
+    configure_forward_rules(bfrt, topo_config)
 
     # 2. Configure pktgen buffer
     config_pktgen_buffer(bfrt, rate, packet_size)
