@@ -55,10 +55,12 @@ def trigger_worker(worker):
         
         cmd = f"echo '{worker['password']}' | sudo -S -E ip netns exec {worker['namespace']} \
             python3 /home/yukema/vartest/server/utils/spineleaf_send_worker.py \
-            --target_mac {RECV_ID['mac']} \
             --target_ip {RECV_ID['ip']} \
             --sender_id {worker['id']} \
-            --interface {worker['interface']}"
+            --namespace {worker['namespace']} \
+            --interface {worker['interface']} \
+            --count 10 \
+            --interval 0.1"
         
         stdin, stdout, stderr = ssh.exec_command(cmd)
         print(f"Started sending probes on worker {worker['id']}.")
@@ -72,15 +74,16 @@ def trigger_worker(worker):
 
 def start_receiver():
     print("Starting receiver on controller...")
-    receiver_cmd = "python3 ./utils/spineleaf_recv_worker.py"
+    receiver_cmd = "python3 ./utils/spineleaf_recv_worker.py \
+        --namespace node1 \
+        --interface enp202s0np0 \
+        --timeout 30"
     receiver_process = subprocess.Popen(receiver_cmd, shell=True)
     return receiver_process
 
 def main():
-    # 1. Start the receiver on the controller side
-    print("Starting receiver on controller...")
-    receiver_cmd = "python3 ./utils/spineleaf_recv_worker.py"
-    receiver_process = subprocess.Popen(receiver_cmd, shell=True)
+    # 1. Start the receiver thread
+    receiver_process = start_receiver()
     
     time.sleep(2) # wait a bit for receiver to start
 
