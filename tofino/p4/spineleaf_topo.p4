@@ -22,10 +22,47 @@
 // Constants and Type Definitions
 //--------------------------------------------
 #define ETHERTYPE_IPV4 0x0800
+#define IP_PROTOCOL_UDP 17
+#define IP_PROTOCOL_TCP 6
+
+// Packet headers aggregation
+header vartest_h {
+    bit<32> experiment_id;
+    bit<32> sender_id;
+    bit<32> seq_no;
+    bit<8>  hop_count;
+
+    // hop1
+    bit<48> hop1_ts_ingress;
+    bit<48> hop1_ts_egress;
+    bit<16> hop1_ingress_port;
+    bit<16> hop1_egress_port;
+
+    // hop2
+    bit<48> hop2_ts_ingress;
+    bit<48> hop2_ts_egress;
+    bit<16> hop2_ingress_port;
+    bit<16> hop2_egress_port;
+
+    // hop3
+    bit<48> hop3_ts_ingress;
+    bit<48> hop3_ts_egress;
+    bit<16> hop3_ingress_port;
+    bit<16> hop3_egress_port;
+
+    // hop4
+    bit<48> hop4_ts_ingress;
+    bit<48> hop4_ts_egress;
+    bit<16> hop4_ingress_port;
+    bit<16> hop4_egress_port;
+}
 
 struct header_t {
     ethernet_h ethernet;
     ipv4_h     ipv4;
+    udp_h      udp;
+    tcp_h      tcp;
+    vartest_h  vartest;
 }
 
 // define custom metadata to hold logical role
@@ -61,6 +98,25 @@ parser SnosParser(
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
+        transition select(hdr.ipv4.protocol) {
+            IP_PROTOCOL_UDP: parse_udp;
+            IP_PROTOCOL_TCP: parse_tcp;
+            default: parse_vartest;
+        }
+    }
+
+    state parse_udp {
+        packet.extract(hdr.udp);
+        transition parse_vartest;
+    }
+
+    state parse_tcp {
+        packet.extract(hdr.tcp);
+        transition parse_vartest;
+    }
+
+    state parse_vartest {
+        packet.extract(hdr.vartest);
         transition accept;
     }
 }
@@ -86,18 +142,9 @@ control SnosIngress(
     }
 
     // standard L3 forwarding action
-    // param: destination MAC address and egress port
-    action ipv4_forward(bit<48> next_hop_dmac, PortId_t port) {
-        // 1. update src MAC
-        hdr.ethernet.src_addr = hdr.ethernet.dst_addr;
-
-        // 2. update dst MAC
-        hdr.ethernet.dst_addr = next_hop_dmac;
-
-        // 3. decrement TTL
-        hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
-
-        // 4. set egress port
+    // parameter: output port
+    action ipv4_forward(PortId_t port) {
+        // set output port
         ig_intr_tm_md.ucast_egress_port = port;
     }
 
@@ -145,6 +192,36 @@ control SnosIngress(
             // Non-IPv4 packets are dropped
             drop();
         }
+
+        // second Stamp ingress timestamps if headers are valid
+        if (hdr.vartest.isValid()) {
+            bit<8> hop_count = hdr.vartest.hop_count;
+            bit<48> ingress_ts = ig_intr_md.ingress_mac_tstamp;
+            bit<16> ingress_port = (bit<16>) ig_intr_md.ingress_port;
+
+            if (hop_count == 0) {
+                hdr.vartest.hop1_ts_ingress = ingress_ts;
+                hdr.vartest.hop1_ingress_port = ingress_port;
+            } else if (hop_count == 1) {
+                hdr.vartest.hop2_ts_ingress = ingress_ts;
+                hdr.vartest.hop2_ingress_port = ingress_port;
+            } else if (hop_count == 2) {
+                hdr.vartest.hop3_ts_ingress = ingress_ts;
+                hdr.vartest.hop3_ingress_port = ingress_port;
+            } else if (hop_count == 3) {
+                hdr.vartest.hop4_ts_ingress = ingress_ts;
+                hdr.vartest.hop4_ingress_port = ingress_port;
+            }
+            // Increment hop count
+            hdr.vartest.hop_count = hop_count + 1;
+
+            // UDP checksum update for now
+            if (hdr.udp.isValid()) {
+                hdr.udp.checksum = 0;
+            } else if (hdr.tcp.isValid()) {
+                hdr.tcp.checksum = 0;
+            }
+        }
     }
 }
 
@@ -157,12 +234,13 @@ control SnosIngressDeparser(
     in metadata_t ig_md,
     in ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md
 ) {
-
     apply {
-
         // Emit headers
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
+        packet.emit(hdr.udp);
+        packet.emit(hdr.tcp);
+        packet.emit(hdr.vartest);
     }
 }
 
@@ -173,12 +251,37 @@ control SnosEgress(
     inout header_t hdr,
     inout metadata_t eg_md,
     in egress_intrinsic_metadata_t eg_intr_md,
-    in egress_intrinsic_metadata_from_parser_t eg_intr_dprsr_md,
+    in egress_intrinsic_metadata_from_parser_t eg_intr_from_prsr,
     inout egress_intrinsic_metadata_for_deparser_t eg_intr_md_for_dprsr,
     inout egress_intrinsic_metadata_for_output_port_t eg_intr_md_for_oport
 ) {
     apply {
-        // No egress parsing for now
+        if (hdr.vartest.isValid()) {
+            bit<8> hop_count = hdr.vartest.hop_count;
+            bit<48> egress_ts = eg_intr_from_prsr.global_tstamp;
+            bit<16> egress_port = (bit<16>) eg_intr_md.egress_port;
+
+            if (hop_count == 1) {
+                hdr.vartest.hop1_ts_egress = egress_ts;
+                hdr.vartest.hop1_egress_port = egress_port;
+            } else if (hop_count == 2) {
+                hdr.vartest.hop2_ts_egress = egress_ts;
+                hdr.vartest.hop2_egress_port = egress_port;
+            } else if (hop_count == 3) {
+                hdr.vartest.hop3_ts_egress = egress_ts;
+                hdr.vartest.hop3_egress_port = egress_port;
+            } else if (hop_count == 4) {
+                hdr.vartest.hop4_ts_egress = egress_ts;
+                hdr.vartest.hop4_egress_port = egress_port;
+            }
+
+            // UDP checksum update for now
+            if (hdr.udp.isValid()) {
+                hdr.udp.checksum = 0;
+            } else if (hdr.tcp.isValid()) {
+                hdr.tcp.checksum = 0;
+            }
+        }
     }
 }
 
@@ -208,6 +311,9 @@ control SnosEgressDeparser(
     apply {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
+        packet.emit(hdr.udp);
+        packet.emit(hdr.tcp);
+        packet.emit(hdr.vartest);
     }
 }
 

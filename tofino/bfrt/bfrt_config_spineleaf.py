@@ -155,16 +155,15 @@ def add_port_mapping(bfrt, phys_port: int, log_switch_id: int):
     )
     logger.info(f"Port mapping added for DEV_PORT={dev_port} to switch_id={log_switch_id}")
 
-def add_ipv4_route(bfrt, log_switch_id: int, dst_ip: str, prefix_len: int, next_hop_dmac: str, out_port: int):
+def add_ipv4_route(bfrt, log_switch_id: int, dst_ip: str, prefix_len: int, out_port: int):
     """Add IPv4 routing entry."""
-    logger.info(f"Adding IPv4 route: log_switch_id={log_switch_id}, dst_ip={dst_ip}/{prefix_len} -> next_hop_dmac={next_hop_dmac}, out_port={out_port}")
+    logger.info(f"Adding IPv4 route: log_switch_id={log_switch_id}, dst_ip={dst_ip}/{prefix_len} -> out_port={out_port}")
     dev_port = get_port_hdl(bfrt, out_port, 0)
     ipv4_table = bfrt.spineleaf_topo.pipe.SnosIngress.t_ipv4_lpm
     ipv4_table.add_with_ipv4_forward(
         logical_switch_id=log_switch_id,
         dst_addr=dst_ip,
         dst_addr_p_length=prefix_len,
-        next_hop_dmac=next_hop_dmac,
         port=dev_port
     )
     logger.info(f"IPv4 route added for dst_ip={dst_ip}/{prefix_len} on switch_id={log_switch_id}")
@@ -218,40 +217,47 @@ add_port_mapping(bfrt, SPINE_P4, SPINE_ID)
 logger.info("Configuring IPv4 routes...")
 # Leaf 1 routes
 # downstream to server 1
-add_ipv4_route(bfrt, LEAF1_ID, "10.0.1.1", 32, MAC_ENDPOINT1_P1, LEAF1_P1)
-add_ipv4_route(bfrt, LEAF1_ID, "10.0.1.2", 32, MAC_ENDPOINT1_P2, LEAF1_P2)
+add_ipv4_route(bfrt, LEAF1_ID, "10.0.1.1", 32, LEAF1_P1)
+add_ipv4_route(bfrt, LEAF1_ID, "10.0.1.2", 32, LEAF1_P1)
+add_ipv4_route(bfrt, LEAF1_ID, "10.0.1.3", 32, LEAF1_P2)
+add_ipv4_route(bfrt, LEAF1_ID, "10.0.1.4", 32, LEAF1_P2)
 # upstream to spine
 #FIXME: be careful about the risk of loop here!!!
-add_ipv4_route(bfrt, LEAF1_ID, "0.0.0.0", 0, MAC_LEAF1_P4, LEAF1_P4)
+add_ipv4_route(bfrt, LEAF1_ID, "10.0.0.0", 8, LEAF1_P4)
 # Leaf 2 routes
 # downstream to server 2
-add_ipv4_route(bfrt, LEAF2_ID, "10.0.2.1", 32, MAC_ENDPOINT2_P1, LEAF2_P1)
-add_ipv4_route(bfrt, LEAF2_ID, "10.0.2.2", 32, MAC_ENDPOINT2_P2, LEAF2_P2)
+add_ipv4_route(bfrt, LEAF2_ID, "10.0.2.1", 32, LEAF2_P1)
+add_ipv4_route(bfrt, LEAF2_ID, "10.0.2.2", 32, LEAF2_P1)
+add_ipv4_route(bfrt, LEAF2_ID, "10.0.2.3", 32, LEAF2_P2)
+add_ipv4_route(bfrt, LEAF2_ID, "10.0.2.4", 32, LEAF2_P2)
 # upstream to spine
-add_ipv4_route(bfrt, LEAF2_ID, "0.0.0.0", 0, MAC_LEAF2_P4, LEAF2_P4)
+add_ipv4_route(bfrt, LEAF2_ID, "10.0.0.0", 8, LEAF2_P4)
 
 # Leaf 3 routes
 # downstream to server 3
-add_ipv4_route(bfrt, LEAF3_ID, "10.0.3.1", 32, MAC_ENDPOINT3_P1, LEAF3_P1)
-add_ipv4_route(bfrt, LEAF3_ID, "10.0.3.2", 32, MAC_ENDPOINT3_P2, LEAF3_P2)
+add_ipv4_route(bfrt, LEAF3_ID, "10.0.3.1", 32, LEAF3_P1)
+add_ipv4_route(bfrt, LEAF3_ID, "10.0.3.2", 32, LEAF3_P1)
+add_ipv4_route(bfrt, LEAF3_ID, "10.0.3.3", 32, LEAF3_P2)
+add_ipv4_route(bfrt, LEAF3_ID, "10.0.3.4", 32, LEAF3_P2)
 # upstream to spine
-add_ipv4_route(bfrt, LEAF3_ID, "0.0.0.0", 0, MAC_LEAF3_P4, LEAF3_P4)
+add_ipv4_route(bfrt, LEAF3_ID, "10.0.0.0", 8, LEAF3_P4)
 
 # Leaf 4 routes
 # downstream to server 4
-add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.1", 32, MAC_ENDPOINT4_P1, LEAF4_P1)
-add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.2", 32, MAC_ENDPOINT4_P2, LEAF4_P2)
+add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.1", 32, LEAF4_P1)
+add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.2", 32, LEAF4_P1)
+add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.3", 32, LEAF4_P2)
+add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.4", 32, LEAF4_P2)
 # upstream to spine
-add_ipv4_route(bfrt, LEAF4_ID, "0.0.0.0", 0, MAC_LEAF4_P4, LEAF4_P4)
+add_ipv4_route(bfrt, LEAF4_ID, "10.0.0.0", 8, LEAF4_P4)
 
 # Spine routes
 # to leaf 1
-add_ipv4_route(bfrt, SPINE_ID, "10.0.1.0", 24, MAC_SPINE_P1, SPINE_P1)
+add_ipv4_route(bfrt, SPINE_ID, "10.0.1.0", 24, SPINE_P1)
 # to leaf 2
-add_ipv4_route(bfrt, SPINE_ID, "10.0.2.0", 24, MAC_SPINE_P2, SPINE_P2)
+add_ipv4_route(bfrt, SPINE_ID, "10.0.2.0", 24, SPINE_P2)
 # to leaf 3
-add_ipv4_route(bfrt, SPINE_ID, "10.0.3.0", 24, MAC_SPINE_P3, SPINE_P3)
+add_ipv4_route(bfrt, SPINE_ID, "10.0.3.0", 24, SPINE_P3)
 # to leaf 4
-add_ipv4_route(bfrt, SPINE_ID, "10.0.4.0", 24, MAC_SPINE_P4, SPINE_P4)
-
+add_ipv4_route(bfrt, SPINE_ID, "10.0.4.0", 24, SPINE_P4)
 logger.info("Tofino Spine-Leaf Topology Control Plane Setup Completed.")
