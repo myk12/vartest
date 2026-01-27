@@ -248,6 +248,7 @@ add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.1", 32, LEAF4_P1)
 add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.2", 32, LEAF4_P1)
 add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.3", 32, LEAF4_P2)
 add_ipv4_route(bfrt, LEAF4_ID, "10.0.4.4", 32, LEAF4_P2)
+
 # upstream to spine
 add_ipv4_route(bfrt, LEAF4_ID, "10.0.0.0", 8, LEAF4_P4)
 
